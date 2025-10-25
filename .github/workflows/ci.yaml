@@ -1,0 +1,74 @@
+name: CI
+
+on:
+  push:
+    branches: [ main ]
+  pull_request:
+    branches: [ main ]
+
+env:
+  ECR_REGISTRY: ${{ secrets.ECR_REGISTRY }}
+  ECR_REPO: ${{ secrets.ECR_REPO }}
+
+permissions:
+      id-token: write   # This is required for requesting the JWT
+      contents: read    # This is required for actions/checkout
+
+jobs:
+  build-and-deploy:
+    runs-on: ubuntu-latest
+    strategy:
+      matrix:
+        include:
+          - env: dev
+            aws_region: us-east-1
+
+    steps:
+      - name: Checkout repo
+        uses: actions/checkout@v4
+
+      - name: Setup Terraform
+        uses: hashicorp/setup-terraform@v2
+        with:
+          terraform_version: 1.5.0
+
+      - name: Configure AWS credentials (OIDC)
+        uses: aws-actions/configure-aws-credentials@v2
+        with:
+          role-to-assume: arn:aws:iam::035636365182:role/GitHubAction-AssumeRoleWithAction
+          aws-region: ${{ matrix.aws_region }}
+          # Optionally set a session name or duration:
+          # role-session-name: github-actions
+          # role-duration-seconds: 900
+
+      - name: Check caller identity (debug)
+        # Temporary debug step to confirm the OIDC-assumed role in workflow logs
+        run: |
+          echo "Calling sts get-caller-identity to show assumed role"
+          aws sts get-caller-identity
+
+      - name: Login to ECR
+        uses: aws-actions/amazon-ecr-login@v1
+
+      - name: Build and push Docker image
+        uses: docker/build-push-action@v4
+        with:
+          context: .
+          push: true
+          tags: ${{ env.ECR_REGISTRY }}/${{ env.ECR_REPO }}:${{ matrix.env }}-${{ github.sha }}
+
+      - name: Save image tag for Terraform
+        id: set-image
+        run: |
+          IMAGE_TAG="${{ env.ECR_REGISTRY }}/${{ env.ECR_REPO }}:${{ matrix.env }}-${{ github.sha }}"
+          echo "image=${IMAGE_TAG}" >> $GITHUB_OUTPUT
+
+      - name: Terraform init, plan and apply
+        env:
+          TF_VAR_env: ${{ matrix.env }}
+          TF_VAR_image: ${{ steps.set-image.outputs.image }}
+          TF_VAR_aws_region: ${{ matrix.aws_region }}
+        run: |
+          terraform init -input=false
+          terraform plan -input=false -out=tfplan
+          terraform apply -input=false -auto-approve tfplan
