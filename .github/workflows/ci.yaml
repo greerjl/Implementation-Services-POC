@@ -37,6 +37,21 @@ jobs:
         with:
           role-to-assume: ${{ vars.AWS_ROLE_ARN }}
           aws-region: ${{ env.AWS_REGION }}
+        
+      - name: Who am I?
+        run: aws sts get-caller-identity
+
+      - name: Bucket region
+        run: aws s3api get-bucket-location --bucket dev-terraform-state-datadog-demo-jb
+
+      - name: List prefix (should NOT be AccessDenied)
+        run: aws s3 ls s3://dev-terraform-state-datadog-demo-jb/dev/ || true
+
+      - name: Head state object (404 is OK; AccessDenied is not)
+        run: aws s3api head-object --bucket dev-terraform-state-datadog-demo-jb --key dev/terraform.tfstate || true
+
+      - name: Describe lock table
+        run: aws dynamodb describe-table --table-name dev-terraform-locks
 
       - name: Validate required variables
         run: |
