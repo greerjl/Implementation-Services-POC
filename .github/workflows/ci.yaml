@@ -2,69 +2,142 @@ name: CI
 
 on:
   push:
-    branches: [ main ]
-  pull_request:
-    branches: [ main ]
+    branches: [ main ]          # dev deploy on merges
+    tags: [ 'v*' ]              # create tag (v1.0.0) when you want prod
+  workflow_dispatch:
 
 permissions:
   id-token: write
   contents: read
 
-env:
-  ECR_REGISTRY: ${{ vars.ECR_REGISTRY }}
-  ECR_REPO: ${{ vars.ECR_REPO }}
-
 jobs:
-  build-and-deploy:
+  deploy-dev:
     runs-on: ubuntu-latest
-    strategy:
-      matrix:
-        include:
-          - env: dev
-            aws_region: us-east-1
+    environment: dev
+    env:
+      AWS_REGION: us-east-1
+      ECR_REGISTRY: ${{ vars.ECR_REGISTRY }}
+      ECR_REPO: ${{ vars.ECR_REPO }}
+    outputs:
+      digest: ${{ steps.meta.outputs.digest }}
+      dev_registry: ${{ steps.meta.outputs.dev_registry }}
+      repo: ${{ steps.meta.outputs.repo }}
+      image_tag: ${{ steps.meta.outputs.image_tag }}
 
     steps:
-      - name: Checkout repo
-        uses: actions/checkout@v4
+      - uses: actions/checkout@v4
 
-      - name: Setup Terraform
-        uses: hashicorp/setup-terraform@v2
+      - uses: hashicorp/setup-terraform@v3
+        with: { terraform_version: 1.5.0 }
+
+      - name: Configure AWS (Dev, OIDC)
+        uses: aws-actions/configure-aws-credentials@v4
         with:
-          terraform_version: 1.5.0
+          role-to-assume: ${{ vars.AWS_ROLE_ARN }}
+          aws-region: ${{ env.AWS_REGION }}
 
-      - name: Configure AWS credentials (OIDC)
-        uses: aws-actions/configure-aws-credentials@v2
-        with:
-          role-to-assume: arn:aws:iam::035636365182:role/GitHubAction-AssumeRoleWithAction
-          aws-region: ${{ matrix.aws_region }}
-          # Optionally set a session name or duration:
-          # role-session-name: github-actions
-          # role-duration-seconds: 900
-
-      - name: Login to ECR (safe)
+      - name: Validate ECR vars
         run: |
-          aws ecr get-login-password --region ${{ matrix.aws_region }} \
+          test -n "${{ env.ECR_REGISTRY }}" || { echo "ECR_REGISTRY empty"; exit 1; }
+          test -n "${{ env.ECR_REPO }}" || { echo "ECR_REPO empty"; exit 1; }
+
+      - name: Login to Dev ECR
+        run: |
+          aws ecr get-login-password --region ${{ env.AWS_REGION }} \
           | docker login --username AWS --password-stdin ${{ env.ECR_REGISTRY }}
 
-      - name: Build & push image
-        id: img
+      - name: Build & push image (Dev)
+        id: push
         run: |
-          IMAGE="${{ env.ECR_REGISTRY }}/${{ env.ECR_REPO }}:${{ matrix.env }}-${{ github.sha }}"
+          IMAGE="${{ env.ECR_REGISTRY }}/${{ env.ECR_REPO }}:dev-${{ github.sha }}"
           docker build -t "$IMAGE" app
           docker push "$IMAGE"
-          echo "image=$IMAGE" >> $GITHUB_OUTPUTv
+          echo "image=$IMAGE" >> $GITHUB_OUTPUT
 
-      - name: Save image tag for Terraform
-        id: set-image
+      - name: Resolve image digest (Dev)
+        id: meta
         run: |
-          IMAGE_TAG="${{ env.ECR_REGISTRY }}/${{ env.ECR_REPO }}:${{ matrix.env }}-${{ github.sha }}"
-          echo "image=${IMAGE_TAG}" >> $GITHUB_OUTPUT
+          DIGEST=$(aws ecr describe-images \
+            --repository-name "${{ env.ECR_REPO }}" \
+            --image-ids imageTag="dev-${{ github.sha }}" \
+            --query 'imageDetails[0].imageDigest' --output text)
+          echo "digest=$DIGEST" >> $GITHUB_OUTPUT
+          echo "dev_registry=${{ env.ECR_REGISTRY }}" >> $GITHUB_OUTPUT
+          echo "repo=${{ env.ECR_REPO }}" >> $GITHUB_OUTPUT
+          echo "image_tag=dev-${{ github.sha }}" >> $GITHUB_OUTPUT
 
-      - name: Terraform init, plan and apply
+      - name: Terraform apply (Dev)
+        working-directory: terraform
         env:
-          TF_VAR_env: ${{ matrix.env }}
-          TF_VAR_image: ${{ steps.set-image.outputs.image }}
-          TF_VAR_aws_region: ${{ matrix.aws_region }}
+          TF_VAR_env: dev
+          TF_VAR_image: ${{ steps.push.outputs.image }}
+          TF_VAR_aws_region: ${{ env.AWS_REGION }}
+        run: |
+          terraform init -input=false
+          terraform plan -input=false -out=tfplan
+          terraform apply -input=false -auto-approve tfplan
+
+  promote-to-prod:
+    runs-on: ubuntu-latest
+    needs: deploy-dev
+    if: startsWith(github.ref, 'refs/tags/v')    # only on tagged releases
+    environment: prod                            # <-- triggers approval gate
+    env:
+      AWS_REGION: us-east-1
+      PROD_ECR_REGISTRY: ${{ vars.ECR_REGISTRY }}   # prod env variable
+      PROD_ECR_REPO: ${{ vars.ECR_REPO }}
+
+    steps:
+      - uses: actions/checkout@v4
+
+      # 1) Assume Dev to pull the exact image by digest
+      - name: Configure AWS (Dev, OIDC)
+        uses: aws-actions/configure-aws-credentials@v4
+        with:
+          role-to-assume: ${{ needs.deploy-dev.outputs.dev_registry && '' || '' }} # placeholder to note we reconfigure below
+          aws-region: ${{ env.AWS_REGION }}
+      - name: Configure AWS (Dev, OIDC) actual
+        uses: aws-actions/configure-aws-credentials@v4
+        with:
+          role-to-assume: ${{ secrets.DEV_AWS_ROLE_ARN }}  # repo secret/variable for Dev role ARN
+          aws-region: ${{ env.AWS_REGION }}
+
+      - name: Login to Dev ECR
+        run: |
+          aws ecr get-login-password --region ${{ env.AWS_REGION }} \
+          | docker login --username AWS --password-stdin ${{ needs.deploy-dev.outputs.dev_registry }}
+
+      - name: Pull by digest from Dev
+        run: |
+          docker pull ${{ needs.deploy-dev.outputs.dev_registry }}/${{ needs.deploy-dev.outputs.repo }}@${{ needs.deploy-dev.outputs.digest }}
+          docker tag  ${{ needs.deploy-dev.outputs.dev_registry }}/${{ needs.deploy-dev.outputs.repo }}@${{ needs.deploy-dev.outputs.digest }} \
+                      ${{ env.PROD_ECR_REGISTRY }}/${{ env.PROD_ECR_REPO }}:prod-${{ github.sha }}
+
+      # 2) Switch to Prod creds and push
+      - name: Configure AWS (Prod, OIDC)
+        uses: aws-actions/configure-aws-credentials@v4
+        with:
+          role-to-assume: ${{ vars.AWS_ROLE_ARN }}
+          aws-region: ${{ env.AWS_REGION }}
+
+      - name: Login to Prod ECR
+        run: |
+          aws ecr get-login-password --region ${{ env.AWS_REGION }} \
+          | docker login --username AWS --password-stdin ${{ env.PROD_ECR_REGISTRY }}
+
+      - name: Push to Prod ECR
+        id: prodpush
+        run: |
+          IMAGE="${{ env.PROD_ECR_REGISTRY }}/${{ env.PROD_ECR_REPO }}:prod-${{ github.sha }}"
+          docker push "$IMAGE"
+          echo "image=$IMAGE" >> $GITHUB_OUTPUT
+
+      - name: Terraform apply (Prod)
+        working-directory: terraform
+        env:
+          TF_VAR_env: prod
+          TF_VAR_image: ${{ steps.prodpush.outputs.image }}
+          TF_VAR_aws_region: ${{ env.AWS_REGION }}
         run: |
           terraform init -input=false
           terraform plan -input=false -out=tfplan
