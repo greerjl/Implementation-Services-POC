@@ -38,20 +38,11 @@ jobs:
           role-to-assume: ${{ vars.AWS_ROLE_ARN }}
           aws-region: ${{ env.AWS_REGION }}
         
-      - name: Who am I?
-        run: aws sts get-caller-identity
-
-      - name: Bucket region
-        run: aws s3api get-bucket-location --bucket dev-terraform-state-datadog-demo-jb
-
-      - name: List prefix (should NOT be AccessDenied)
-        run: aws s3 ls s3://dev-terraform-state-datadog-demo-jb/dev/ || true
-
-      - name: Head state object (404 is OK; AccessDenied is not)
-        run: aws s3api head-object --bucket dev-terraform-state-datadog-demo-jb --key dev/terraform.tfstate || true
-
-      - name: Describe lock table
-        run: aws dynamodb describe-table --table-name dev-terraform-locks
+      - name: Verify S3 write (CI role)
+        run: |
+          echo ok > /tmp/probe.txt
+          aws s3 cp /tmp/probe.txt s3://dev-terraform-state-datadog-demo-jb/dev/probe.txt
+          aws s3 rm s3://dev-terraform-state-datadog-demo-jb/dev/probe.txt
 
       - name: Validate required variables
         run: |
@@ -97,6 +88,29 @@ jobs:
         run: |
           docker build -t "${{ steps.meta.outputs.image }}" app
           docker push "${{ steps.meta.outputs.image }}"
+
+      - name: Show backend file (sanity)
+        working-directory: terraform
+        run: |
+          echo "------ backend/dev.hcl ------"
+          cat backend/dev.hcl || true
+          echo "-----------------------------"
+
+      - name: Remove cached backend (force reconfigure)
+        working-directory: terraform
+        run: rm -rf .terraform
+
+      - name: Terraform init (force this backend)
+        working-directory: terraform
+        run: |
+          terraform init -input=false -reconfigure \
+            -backend-config=backend/dev.hcl
+      - name: Terraform init (debug once)
+        if: always()
+        working-directory: terraform
+        env:
+          TF_LOG: DEBUG
+        run: terraform init -input=false -reconfigure -backend-config=backend/dev.hcl
 
       # Terraform deploy (always uses the same image reference, pushed earlier or pre-existing)
       - name: Terraform init / plan / apply (dev)
