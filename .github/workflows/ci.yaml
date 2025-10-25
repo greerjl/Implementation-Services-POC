@@ -38,12 +38,6 @@ jobs:
           role-to-assume: ${{ vars.AWS_ROLE_ARN }}
           aws-region: ${{ env.AWS_REGION }}
         
-      - name: Verify S3 write (CI role)
-        run: |
-          echo ok > /tmp/probe.txt
-          aws s3 cp /tmp/probe.txt s3://dev-terraform-state-datadog-demo-jb/dev/probe.txt
-          aws s3 rm s3://dev-terraform-state-datadog-demo-jb/dev/probe.txt
-
       - name: Validate required variables
         run: |
           test -n "${{ env.AWS_REGION }}" || { echo "Missing AWS_REGION"; exit 1; }
@@ -54,7 +48,7 @@ jobs:
             echo "ECR_REGISTRY must be host only (no /${{ env.ECR_REPO }})."; exit 1;
           fi
 
-      - name: Login to ECR (safe)
+      - name: Login to ECR
         run: |
           aws ecr get-login-password --region ${{ env.AWS_REGION }} \
           | docker login --username AWS --password-stdin ${{ env.ECR_REGISTRY }}
@@ -69,7 +63,7 @@ jobs:
           echo "tag=$TAG" >> $GITHUB_OUTPUT
           echo "Will use image: $IMAGE"
 
-      # Option A: skip push if the tag already exists (immutability-friendly)
+      # skip push if the tag already exists (immutability-friendly)
       - name: Check if image tag exists in ECR
         id: ecrcheck
         run: |
@@ -88,30 +82,7 @@ jobs:
         run: |
           docker build -t "${{ steps.meta.outputs.image }}" app
           docker push "${{ steps.meta.outputs.image }}"
-
-      - name: Show backend file (sanity)
-        working-directory: terraform
-        run: |
-          echo "------ backend/dev.hcl ------"
-          cat backend/dev.hcl || true
-          echo "-----------------------------"
-
-      - name: Remove cached backend (force reconfigure)
-        working-directory: terraform
-        run: rm -rf .terraform
-
-      - name: Terraform init (force this backend)
-        working-directory: terraform
-        run: |
-          terraform init -input=false -reconfigure \
-            -backend-config=backend/dev.hcl
-      - name: Terraform init (debug once)
-        if: always()
-        working-directory: terraform
-        env:
-          TF_LOG: DEBUG
-        run: terraform init -input=false -reconfigure -backend-config=backend/dev.hcl
-
+          
       # Terraform deploy (always uses the same image reference, pushed earlier or pre-existing)
       - name: Terraform init / plan / apply (dev)
         working-directory: terraform
