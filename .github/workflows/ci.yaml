@@ -6,13 +6,13 @@ on:
   pull_request:
     branches: [ main ]
 
-env:
-  ECR_REGISTRY: ${{ secrets.ECR_REGISTRY }}
-  ECR_REPO: ${{ secrets.ECR_REPO }}
-
 permissions:
-      id-token: write   # This is required for requesting the JWT
-      contents: read    # This is required for actions/checkout
+  id-token: write
+  contents: read
+
+env:
+  ECR_REGISTRY: ${{ vars.ECR_REGISTRY }}
+  ECR_REPO: ${{ vars.ECR_REPO }}
 
 jobs:
   build-and-deploy:
@@ -41,21 +41,18 @@ jobs:
           # role-session-name: github-actions
           # role-duration-seconds: 900
 
-      - name: Check caller identity (debug)
-        # Temporary debug step to confirm the OIDC-assumed role in workflow logs
+      - name: Login to ECR (safe)
         run: |
-          echo "Calling sts get-caller-identity to show assumed role"
-          aws sts get-caller-identity
+          aws ecr get-login-password --region ${{ matrix.aws_region }} \
+          | docker login --username AWS --password-stdin ${{ env.ECR_REGISTRY }}
 
-      - name: Login to ECR
-        uses: aws-actions/amazon-ecr-login@v1
-
-      - name: Build and push Docker image
-        uses: docker/build-push-action@v4
-        with:
-          context: .
-          push: true
-          tags: ${{ env.ECR_REGISTRY }}/${{ env.ECR_REPO }}:${{ matrix.env }}-${{ github.sha }}
+      - name: Build & push image
+        id: img
+        run: |
+          IMAGE="${{ env.ECR_REGISTRY }}/${{ env.ECR_REPO }}:${{ matrix.env }}-${{ github.sha }}"
+          docker build -t "$IMAGE" app
+          docker push "$IMAGE"
+          echo "image=$IMAGE" >> $GITHUB_OUTPUTv
 
       - name: Save image tag for Terraform
         id: set-image
