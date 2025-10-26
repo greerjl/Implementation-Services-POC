@@ -86,8 +86,8 @@ jobs:
       ECR_REPO: ${{ vars.ECR_REPO }}
       PROD_ROLE_ARN: ${{ vars.AWS_ROLE_ARN }}
       # dev (source) — repo-level variables (or move into prod environment if preferred)
-      DEV_AWS_REGION: ${{ vars.DEV_AWS_REGION }}
-      DEV_ECR_HOST: ${{ vars.DEV_ECR_REGISTRY_HOST }}
+      DEV_AWS_REGION: ${{ vars.AWS_REGION }}
+      DEV_ECR_HOST: ${{ vars.DEV_ECR_HOST }}
       DEV_ROLE_ARN: ${{ vars.DEV_AWS_ROLE_ARN }}
     steps:
       - name: Checkout
@@ -112,11 +112,11 @@ jobs:
         uses: aws-actions/configure-aws-credentials@v4
         with:
           role-to-assume: ${{ env.DEV_ROLE_ARN }}
-          aws-region: ${{ env.DEV_AWS_REGION }}
+          aws-region: ${{ env.AWS_REGION }}
 
       - name: Docker login to DEV ECR & pull
         run: |
-          aws ecr get-login-password --region ${{ env.DEV_AWS_REGION }} \
+          aws ecr get-login-password --region ${{ env.AWS_REGION }} \
           | docker login --username AWS --password-stdin ${{ env.DEV_ECR_HOST }}
           docker pull "${{ env.DEV_ECR_HOST }}/${{ env.ECR_REPO }}:${{ steps.tags.outputs.dev_tag }}"
 
