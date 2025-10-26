@@ -82,7 +82,23 @@ jobs:
         run: |
           docker build -t "${{ steps.meta.outputs.image }}" app
           docker push "${{ steps.meta.outputs.image }}"
-          
+
+      - name: Remove cached backend (force reconfigure)
+        working-directory: terraform
+        run: rm -rf .terraform
+
+      - name: Terraform init (force this backend)
+        working-directory: terraform
+        run: |
+          terraform init -input=false -reconfigure \
+            -backend-config=backend/dev.hcl
+      - name: Terraform init (debug once)
+        if: always()
+        working-directory: terraform
+        env:
+          TF_LOG: DEBUG
+        run: terraform init -input=false -reconfigure -backend-config=backend/dev.hcl
+
       # Terraform deploy (always uses the same image reference, pushed earlier or pre-existing)
       - name: Terraform init / plan / apply (dev)
         working-directory: terraform
