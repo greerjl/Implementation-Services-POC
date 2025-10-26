@@ -33,15 +33,3 @@ variable "ecr_repo_name" {
   type        = string
   default     = "app-demo"
 }
-
-variable "ssm_config_path" {
-  description = "Path to the SSM parameter for app config"
-  type        = string
-  default     = "/app/config" # static default; we'll make it dynamic later
-}
-
-variable "ssm_api_key_path" {
-  description = "Path to the SSM parameter for the API key"
-  type        = string
-  default     = "/app/api_key"
-}

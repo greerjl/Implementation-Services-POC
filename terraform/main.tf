@@ -64,8 +64,8 @@ resource "aws_iam_role_policy" "ssm_read_parameters_policy" {
           "ssm:GetParametersByPath"
         ],
         Resource = [
-          "arn:aws:ssm:${var.aws_region}:${data.aws_caller_identity.this.account_id}:parameter${var.ssm_config_path}",
-          "arn:aws:ssm:${var.aws_region}:${data.aws_caller_identity.this.account_id}:parameter${var.ssm_api_key_path}"
+          "arn:aws:ssm:${var.aws_region}:${data.aws_caller_identity.this.account_id}:parameter${aws_ssm_parameter.ssm_config.name}",
+          "arn:aws:ssm:${var.aws_region}:${data.aws_caller_identity.this.account_id}:parameter${aws_ssm_parameter.ssm_api_key.name}"
         ]
       }
     ]
@@ -81,6 +81,22 @@ resource "aws_iam_role_policy_attachment" "ecs_task_execution_role_policy_attach
 resource "aws_cloudwatch_log_group" "cloudwatch_logs_group" {
   name              = "/ecs/${var.name}-${var.env}-logs"
   retention_in_days = 7
+}
+
+resource "aws_ssm_parameter" "ssm_api_key" {
+  name      = "/app/${var.env}/api_key"
+  type      = "SecureString"
+  value     = "PLACEHOLDER_API_KEY"
+  overwrite = true
+  tags      = local.default_tags
+}
+
+resource "aws_ssm_parameter" "ssm_config" {
+  name      = "/app/${var.env}/config"
+  type      = "String"
+  value     = "{\"APP_NAME\":\"demo-app\",\"ENV\":\"dev\",\"DEBUG\":\"true\"}"
+  overwrite = true
+  tags      = local.default_tags
 }
 
 resource "aws_ecs_cluster" "ecs_cluster" {
@@ -125,11 +141,11 @@ resource "aws_ecs_task_definition" "ecs_task_definition" {
       secrets = [
         {
           name      = "API_KEY"
-          valueFrom = "arn:aws:ssm:${var.aws_region}:${data.aws_caller_identity.this.account_id}:parameter${var.ssm_api_key_path}"
+          valueFrom = "arn:aws:ssm:${var.aws_region}:${data.aws_caller_identity.this.account_id}:parameter${aws_ssm_parameter.ssm_api_key.name}"
         },
         {
           name      = "APP_CONFIG_JSON"
-          valueFrom = "arn:aws:ssm:${var.aws_region}:${data.aws_caller_identity.this.account_id}:parameter${var.ssm_config_path}"
+          valueFrom = "arn:aws:ssm:${var.aws_region}:${data.aws_caller_identity.this.account_id}:parameter${aws_ssm_parameter.ssm_config.name}"
         }
       ]
       healthCheck = {
