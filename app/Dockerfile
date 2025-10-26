@@ -1,6 +1,11 @@
 # Use official lightweight Python base
 FROM python:3.11-slim
 
+# Install curl for ECS healthcheck
+RUN apt-get update \
+ && apt-get install -y --no-install-recommends curl \
+ && rm -rf /var/lib/apt/lists/*
+
 # Set working directory
 WORKDIR /app
 
