@@ -2,10 +2,8 @@
 
 # Local variables
 locals {
-  ssm_config_full_path  = "/app/${var.env}/config"
-  ssm_api_key_full_path = "/app/${var.env}/api_key"
   default_tags = {
-    Project     = var.name
+    Project     = "Datadog-Implementation-Services-POC"
     Environment = var.env
   }
 }
@@ -59,6 +57,11 @@ resource "aws_iam_role_policy" "ssm_read_parameters_policy" {
       {
         Effect = "Allow",
         Action = [
+          "xray:PutTraceSegments",
+          "xray:PutTelemetryRecords",
+          "logs:CreateLogGroup",
+          "logs:CreateLogStream",
+          "logs:PutLogEvents",
           "ssm:GetParameter",
           "ssm:GetParameters",
           "ssm:GetParametersByPath"
@@ -81,22 +84,6 @@ resource "aws_iam_role_policy_attachment" "ecs_task_execution_role_policy_attach
 resource "aws_cloudwatch_log_group" "cloudwatch_logs_group" {
   name              = "/ecs/${var.name}-${var.env}-logs"
   retention_in_days = 7
-}
-
-resource "aws_ssm_parameter" "ssm_api_key" {
-  name      = "/app/${var.env}/api_key"
-  type      = "SecureString"
-  value     = "PLACEHOLDER_API_KEY"
-  overwrite = true
-  tags      = local.default_tags
-}
-
-resource "aws_ssm_parameter" "ssm_config" {
-  name      = "/app/${var.env}/config"
-  type      = "String"
-  value     = "{\"APP_NAME\":\"demo-app\",\"ENV\":\"dev\",\"DEBUG\":\"true\"}"
-  overwrite = true
-  tags      = local.default_tags
 }
 
 resource "aws_ecs_cluster" "ecs_cluster" {
@@ -138,16 +125,6 @@ resource "aws_ecs_task_definition" "ecs_task_definition" {
           debug = var.env == "dev" ? "true" : "false"
         }
       ]
-      secrets = [
-        {
-          name      = "API_KEY"
-          valueFrom = "arn:aws:ssm:${var.aws_region}:${data.aws_caller_identity.this.account_id}:parameter${aws_ssm_parameter.ssm_api_key.name}"
-        },
-        {
-          name      = "APP_CONFIG_JSON"
-          valueFrom = "arn:aws:ssm:${var.aws_region}:${data.aws_caller_identity.this.account_id}:parameter${aws_ssm_parameter.ssm_config.name}"
-        }
-      ]
       healthCheck = {
         command     = ["CMD-SHELL", "curl -f http://localhost:${var.container_port}/health || exit 1"]
         interval    = 30
@@ -155,6 +132,34 @@ resource "aws_ecs_task_definition" "ecs_task_definition" {
         retries     = 3
         startPeriod = 10
       }
+    },
+    {
+      name       = "otel-collector"
+      image      = "public.ecr.aws/aws-observability/aws-otel-collector:latest"
+      essential  = false
+      cpu        = 128
+      memory     = 256
+      portMappings = [
+        { containerPort = 4317, protocol = "tcp" },
+        { containerPort = 4318, protocol = "tcp" }
+      ]
+      secrets = [
+        {
+          name      = "AOT_CONFIG_CONTENT"
+          valueFrom = "arn:aws:ssm:${var.aws_region}:${data.aws_caller_identity.this.account_id}:parameter/otel/${var.env}/config"
+        }
+      ]
+      logConfiguration = {
+        logDriver = "awslogs"
+        options = {
+          awslogs-group         = "/ecs/app-demo-${var.env}-logs"
+          awslogs-region        = var.aws_region
+          awslogs-stream-prefix = "otel-collector"
+        }
+      }
+      environment = [
+        { name = "AWS_REGION", value = var.aws_region }
+      ]
     }
   ])
 }
