@@ -1,0 +1,104 @@
+name: Destroy Dev
+
+on:
+  workflow_dispatch:
+    inputs:
+      confirm:
+        description: 'Type DESTROY to confirm tearing down DEV'
+        required: true
+      delete_images:
+        description: 'Also delete ECR images tagged dev-* (optional)'
+        type: boolean
+        default: false
+
+permissions:
+  id-token: write
+  contents: read
+
+concurrency:
+  group: destroy-dev
+  cancel-in-progress: false
+
+jobs:
+  destroy-dev:
+    runs-on: ubuntu-latest
+    environment: dev  # requires approval in your "dev" environment
+    env:
+      AWS_REGION: ${{ vars.AWS_REGION }}
+      AWS_ROLE_ARN: ${{ vars.AWS_ROLE_ARN }}
+      ECR_REPO: ${{ vars.ECR_REPO }}
+    steps:
+      - name: Guardrail — require DESTROY
+        run: |
+          if [ "${{ inputs.confirm }}" != "DESTROY" ]; then
+            echo "You must type DESTROY to proceed."
+            exit 1
+          fi
+
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Setup Terraform
+        uses: hashicorp/setup-terraform@v3
+        with:
+          terraform_version: 1.5.0
+
+      - name: Configure AWS (dev)
+        uses: aws-actions/configure-aws-credentials@v4
+        with:
+          role-to-assume: ${{ env.AWS_ROLE_ARN }}
+          aws-region: ${{ env.AWS_REGION }}
+
+      - name: Scale service to 0 (drain tasks)
+        working-directory: terraform
+        env:
+          TF_VAR_env: dev
+          TF_VAR_aws_region: ${{ env.AWS_REGION }}
+        run: |
+          rm -rf .terraform
+          terraform init -input=false -reconfigure -backend-config=backend/dev.hcl
+          terraform apply -input=false -auto-approve \
+            -var-file=tfvars/dev.tfvars \
+            -var="desired_count=0"
+
+      - name: Destroy DEV infrastructure
+        working-directory: terraform
+        env:
+          TF_VAR_env: dev
+          TF_VAR_aws_region: ${{ env.AWS_REGION }}
+        run: |
+          terraform destroy -input=false -auto-approve \
+            -var-file=tfvars/dev.tfvars
+
+      - name: (Optional) Delete dev-* images from ECR
+        if: ${{ inputs.delete_images == true }}
+        env:
+          AWS_REGION: ${{ env.AWS_REGION }}
+          ECR_REPO: ${{ env.ECR_REPO }}
+        run: |
+          echo "Finding dev-* image tags in $ECR_REPO ..."
+          # Get all tags, filter to dev-*, delete in small batches
+          mapfile -t TAGS < <(aws ecr describe-images \
+            --repository-name "$ECR_REPO" \
+            --query 'imageDetails[].imageTags[]' \
+            --output text 2>/dev/null | tr '\t' '\n' | grep '^dev-' || true)
+
+          if [ ${#TAGS[@]} -eq 0 ]; then
+            echo "No dev-* tags found."
+            exit 0
+          fi
+
+          echo "Deleting ${#TAGS[@]} dev-* tags..."
+          BATCH=()
+          for T in "${TAGS[@]}"; do
+            BATCH+=(imageTag="$T")
+            # ECR supports multiple --image-ids; delete in chunks of 50
+            if [ ${#BATCH[@]} -ge 50 ]; then
+              aws ecr batch-delete-image --repository-name "$ECR_REPO" --image-ids "${BATCH[@]}" || true
+              BATCH=()
+            fi
+          done
+          if [ ${#BATCH[@]} -gt 0 ]; then
+            aws ecr batch-delete-image --repository-name "$ECR_REPO" --image-ids "${BATCH[@]}" || true
+          fi
+          echo "ECR dev-* image cleanup complete."
