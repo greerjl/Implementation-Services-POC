@@ -58,9 +58,8 @@ jobs:
           rm -rf .terraform
           terraform init -input=false -reconfigure -backend-config=backend/dev.hcl
           terraform apply -input=false -auto-approve \
-            -var-file=tfvars/dev.tfvars \
-            -var="desired_count=0"
-
+            -var-file=tfvars/dev.tfvars 
+            
       - name: Destroy DEV infrastructure
         working-directory: terraform
         env:
