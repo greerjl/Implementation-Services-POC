@@ -119,11 +119,11 @@ resource "aws_ecs_task_definition" "ecs_task_definition" {
         }
       }
       environment = [
-        {
-          name  = var.name
-          value = var.env
-          debug = var.env == "dev" ? "true" : "false"
-        }
+        { name  = var.name, value = var.env, debug = var.env == "dev" ? "true" : "false" },
+        { name = "ENVIRONMENT", value = var.env },    
+        { name = "OTEL_EXPORTER_OTLP_ENDPOINT", value = "http://localhost:4317" },
+        { name = "OTEL_EXPORTER_OTLP_PROTOCOL", value = "grpc" },
+        { name = "OTEL_RESOURCE_ATTRIBUTES", value = "service.name=app-demo,deployment.environment=${var.env}" }
       ]
       healthCheck = {
         command     = ["CMD-SHELL", "curl -f http://localhost:${var.container_port}/health || exit 1"]

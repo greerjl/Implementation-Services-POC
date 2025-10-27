@@ -12,8 +12,7 @@ WORKDIR /app
 # Install deps first (faster rebuilds)
 COPY requirements.txt .
 RUN pip install --upgrade pip \
- && pip install --no-cache-dir -r requirements.txt \
- && opentelemetry-bootstrap -a install
+ && pip install --no-cache-dir -r requirements.txt
 
 # Copy app source
 COPY app.py .
