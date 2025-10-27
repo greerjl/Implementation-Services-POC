@@ -66,10 +66,7 @@ resource "aws_iam_role_policy" "ssm_read_parameters_policy" {
           "ssm:GetParameters",
           "ssm:GetParametersByPath"
         ],
-        Resource = [
-          "arn:aws:ssm:${var.aws_region}:${data.aws_caller_identity.this.account_id}:parameter${aws_ssm_parameter.ssm_config.name}",
-          "arn:aws:ssm:${var.aws_region}:${data.aws_caller_identity.this.account_id}:parameter${aws_ssm_parameter.ssm_api_key.name}"
-        ]
+        Resource = ["*"]
       }
     ]
   })
