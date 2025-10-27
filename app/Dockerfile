@@ -11,7 +11,9 @@ WORKDIR /app
 
 # Install deps first (faster rebuilds)
 COPY requirements.txt .
-RUN pip install --no-cache-dir -r requirements.txt
+RUN pip install --upgrade pip \
+ && pip install --no-cache-dir -r requirements.txt \
+ && opentelemetry-bootstrap -a install
 
 # Copy app source
 COPY app.py .
@@ -20,5 +22,9 @@ COPY app.py .
 ENV PORT=8080
 EXPOSE 8080
 
-# Run Flask app
-CMD ["python", "app.py"]
+# Run via the OTel launcher
+CMD ["opentelemetry-instrument", \
+     "--traces_exporter", "otlp", \
+     "--metrics_exporter", "none", \
+     "--service_name", "app-demo", \
+     "python", "app.py"]
