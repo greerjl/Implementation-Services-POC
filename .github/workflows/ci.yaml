@@ -15,7 +15,7 @@ jobs:
     environment: dev
     env:
       AWS_REGION: ${{ vars.AWS_REGION }}
-      ECR_REGISTRY_HOST: ${{ vars.ECR_REGISTRY_HOST }}   # host only
+      ECR_REGISTRY_HOST: ${{ vars.ECR_REGISTRY_HOST }}   # host only, no trailing slash
       ECR_REPO: ${{ vars.ECR_REPO }}
     steps:
       - name: Checkout
@@ -37,21 +37,24 @@ jobs:
           aws ecr get-login-password --region ${{ env.AWS_REGION }} \
           | docker login --username AWS --password-stdin ${{ env.ECR_REGISTRY_HOST }}
 
-      - name: Compute image tag
+      - name: Compute image ref
         id: meta
         run: |
-          TAG="dev-${{ github.sha }}"
+          set -euo pipefail
+          TAG="dev-${GITHUB_SHA}"
           IMAGE="${{ env.ECR_REGISTRY_HOST }}/${{ env.ECR_REPO }}:${TAG}"
+          case "$IMAGE" in *.amazonaws.com/*:*) ;; *) echo "::error ::IMAGE malformed: $IMAGE"; exit 1 ;; esac
           echo "tag=$TAG" >> $GITHUB_OUTPUT
           echo "image=$IMAGE" >> $GITHUB_OUTPUT
-          echo "Will use: $IMAGE"
+          echo "Using dev image: $IMAGE"
 
-      - name: Check if tag exists
+      - name: Check if tag exists (dev)
         id: ecrcheck
         run: |
           if aws ecr describe-images \
                --repository-name "${{ env.ECR_REPO }}" \
-               --image-ids imageTag="${{ steps.meta.outputs.tag }}" >/dev/null 2>&1; then
+               --image-ids imageTag="${{ steps.meta.outputs.tag }}" \
+               --region "${{ env.AWS_REGION }}" >/dev/null 2>&1; then
             echo "exists=true" >> $GITHUB_OUTPUT
           else
             echo "exists=false" >> $GITHUB_OUTPUT
@@ -80,15 +83,15 @@ jobs:
     needs: deploy-dev
     environment: prod
     env:
-      # prod env
-      AWS_REGION: ${{ vars.AWS_REGION }}
-      PROD_ECR_HOST: ${{ vars.ECR_REGISTRY_HOST }}
-      ECR_REPO: ${{ vars.ECR_REPO }}
-      PROD_ROLE_ARN: ${{ vars.AWS_ROLE_ARN }}
-      # dev (source) — repo-level variables (or move into prod environment if preferred)
-      DEV_AWS_REGION: ${{ vars.AWS_REGION }}
-      DEV_ECR_HOST: ${{ vars.DEV_ECR_HOST }}
-      DEV_ROLE_ARN: ${{ vars.DEV_AWS_ROLE_ARN }}
+      # prod (target) – values come from prod environment
+      PROD_AWS_REGION: ${{ vars.AWS_REGION }}
+      PROD_ROLE_ARN:   ${{ vars.AWS_ROLE_ARN }}
+      PROD_ECR_HOST:   ${{ vars.ECR_REGISTRY_HOST }}
+      ECR_REPO:        ${{ vars.ECR_REPO }}
+      # dev (source) – use the dev environment values explicitly
+      DEV_AWS_REGION:  ${{ vars.AWS_REGION }}            # if dev/prod regions differ, set per-env
+      DEV_ECR_HOST:    ${{ vars.DEV_ECR_HOST }}          # var in repo/global
+      DEV_ROLE_ARN:    ${{ vars.DEV_AWS_ROLE_ARN }}      # var in repo/global
     steps:
       - name: Checkout
         uses: actions/checkout@v4
@@ -98,78 +101,73 @@ jobs:
         with:
           terraform_version: 1.5.0
 
-      - name: Compute tags/URIs
-        id: tags
+      - name: Define image refs
+        id: img
         run: |
-          DEV_TAG="dev-${{ github.sha }}"
-          PROD_TAG="prod-${{ github.sha }}"
-          echo "dev_tag=$DEV_TAG" >> $GITHUB_OUTPUT
-          echo "prod_tag=$PROD_TAG" >> $GITHUB_OUTPUT
-          echo "prod_image=${{ env.PROD_ECR_HOST }}/${{ env.ECR_REPO }}:${PROD_TAG}" >> $GITHUB_OUTPUT
+          set -euo pipefail
+          DEV_IMAGE="${{ env.DEV_ECR_HOST }}/${{ env.ECR_REPO }}:dev-${GITHUB_SHA}"
+          PROD_IMAGE="${{ env.PROD_ECR_HOST }}/${{ env.ECR_REPO }}:prod-${GITHUB_SHA}"
+          for v in DEV_IMAGE PROD_IMAGE; do
+            val="${!v}"
+            case "$val" in *.amazonaws.com/*:*) ;; *) echo "::error ::$v malformed: $val"; exit 1 ;; esac
+            echo "$v=$val"
+          done
+          echo "DEV_IMAGE=$DEV_IMAGE"   >> $GITHUB_OUTPUT
+          echo "PROD_IMAGE=$PROD_IMAGE" >> $GITHUB_OUTPUT
 
       # 1) Assume DEV role, pull the built image from dev ECR
       - name: Configure AWS (dev)
         uses: aws-actions/configure-aws-credentials@v4
         with:
           role-to-assume: ${{ env.DEV_ROLE_ARN }}
-          aws-region: ${{ env.AWS_REGION }}
+          aws-region: ${{ env.DEV_AWS_REGION }}
 
-      - name: Docker login to DEV ECR & pull
+      - name: Login & pull (DEV)
         run: |
-          aws ecr get-login-password --region ${{ env.AWS_REGION }} \
-          | docker login --username AWS --password-stdin ${{ env.DEV_ECR_HOST }}
-          docker pull "${{ env.DEV_ECR_HOST }}/${{ env.ECR_REPO }}:${{ steps.tags.outputs.dev_tag }}"
+          aws ecr get-login-password --region "${{ env.DEV_AWS_REGION }}" \
+          | docker login --username AWS --password-stdin "${{ env.DEV_ECR_HOST }}"
+          docker pull "${{ steps.img.outputs.DEV_IMAGE }}"
 
-      # 2) Assume PROD role, tag & push to prod ECR (no rebuild)
+      # 2) Assume PROD role
       - name: Configure AWS (prod)
         uses: aws-actions/configure-aws-credentials@v4
         with:
           role-to-assume: ${{ env.PROD_ROLE_ARN }}
-          aws-region: ${{ env.AWS_REGION }}
+          aws-region: ${{ env.PROD_AWS_REGION }}
 
-      - name: Docker login to PROD ECR & push
+      - name: Login (PROD)
         run: |
-          aws ecr get-login-password --region ${{ env.AWS_REGION }} \
-          | docker login --username AWS --password-stdin ${{ env.PROD_ECR_HOST }}
-          docker tag  "${{ env.DEV_ECR_HOST }}/${{ env.ECR_REPO }}:${{ steps.tags.outputs.dev_tag }}" \
-                      "${{ steps.tags.outputs.prod_image }}"
-          docker push "${{ steps.tags.outputs.prod_image }}"
+          aws ecr get-login-password --region "${{ env.PROD_AWS_REGION }}" \
+          | docker login --username AWS --password-stdin "${{ env.PROD_ECR_HOST }}"
 
-      - name: Define image tags
-        id: img
-        run: |
-          echo "DEV_IMAGE=${{ vars.DEV_ECR_HOST }}/${{ vars.ECR_REPO }}:dev-${{ github.sha }}" >> $GITHUB_OUTPUT
-          echo "PROD_IMAGE=${{ vars.PROD_ECR_HOST }}/${{ vars.ECR_REPO }}:prod-${{ github.sha }}" >> $GITHUB_OUTPUT
-
-      - name: Check if prod tag already exists
+      # 3) Push only if immutable tag doesn't exist
+      - name: Check if prod tag exists
         id: prod_tag
         run: |
-          set -e
           if aws ecr describe-images \
-              --repository-name "${{ vars.ECR_REPO }}" \
-              --image-ids imageTag="prod-${{ github.sha }}" \
-              --region "${{ vars.PROD_AWS_REGION }}" >/dev/null 2>&1; then
-            echo "exists=true" >> $GITHUB_OUTPUT
+            --repository-name "${{ env.ECR_REPO }}" \
+            --image-ids imageTag="prod-${GITHUB_SHA}" \
+            --region "${{ env.PROD_AWS_REGION }}" >/dev/null 2>&1; then
+            echo "exists=true" >> "$GITHUB_OUTPUT"
           else
-            echo "exists=false" >> $GITHUB_OUTPUT
+            echo "exists=false" >> "$GITHUB_OUTPUT"
           fi
 
-      - name: Promote image to prod (pull→tag→push) if missing
+      - name: Promote image to PROD (if missing)
         if: steps.prod_tag.outputs.exists == 'false'
         run: |
-          # Pull built image from DEV
-          docker pull "${{ steps.img.outputs.DEV_IMAGE }}"
-          # Retag for PROD
-          docker tag "${{ steps.img.outputs.DEV_IMAGE }}" "${{ steps.img.outputs.PROD_IMAGE }}"
-          # Push to PROD once (immutable)
+          docker tag  "${{ steps.img.outputs.DEV_IMAGE }}" "${{ steps.img.outputs.PROD_IMAGE }}"
           docker push "${{ steps.img.outputs.PROD_IMAGE }}"
 
+      # 4) Terraform deploy (prod) with the immutable image ref
       - name: Terraform apply (prod)
+        working-directory: terraform
         env:
-          TF_VAR_env: prod
-          TF_VAR_image: ${{ steps.img.outputs.PROD_IMAGE }}
-          TF_VAR_aws_region: ${{ vars.PROD_AWS_REGION }}
+          TF_VAR_env:       prod
+          TF_VAR_image:     ${{ steps.img.outputs.PROD_IMAGE }}
+          TF_VAR_aws_region: ${{ env.PROD_AWS_REGION }}
         run: |
+          rm -rf .terraform
           terraform init -input=false -reconfigure -backend-config=backend/prod.hcl
-          terraform plan -input=false -out=tfplan
+          terraform plan -input=false -var-file=tfvars/prod.tfvars -out=tfplan
           terraform apply -input=false -auto-approve tfplan
