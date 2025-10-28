@@ -22,19 +22,11 @@ concurrency:
 jobs:
   destroy-dev:
     runs-on: ubuntu-latest
-    environment: dev  # requires approval in your "dev" environment
+    environment: dev
     env:
-      AWS_REGION: ${{ vars.AWS_REGION }}
-      AWS_ROLE_ARN: ${{ vars.AWS_ROLE_ARN }}
-      ECR_REPO: ${{ vars.ECR_REPO }}
+      AWS_REGION: ${{ vars.AWS_REGION }}                # e.g. us-east-1
+      ECR_REPO:   ${{ vars.ECR_REPO }}                  # app-demo
     steps:
-      - name: Guardrail — require DESTROY
-        run: |
-          if [ "${{ inputs.confirm }}" != "DESTROY" ]; then
-            echo "You must type DESTROY to proceed."
-            exit 1
-          fi
-
       - name: Checkout
         uses: actions/checkout@v4
 
@@ -46,56 +38,33 @@ jobs:
       - name: Configure AWS (dev)
         uses: aws-actions/configure-aws-credentials@v4
         with:
-          role-to-assume: ${{ env.AWS_ROLE_ARN }}
-          aws-region: ${{ env.AWS_REGION }}
+          role-to-assume: ${{ vars.AWS_ROLE_ARN }}      # arn:aws:iam::0356...:role/GitHubAction-AssumeRoleWithAction
+          aws-region:     ${{ env.AWS_REGION }}
 
-      - name: Scale service to 0 (drain tasks)
+      - name: Show caller identity
+        run: aws sts get-caller-identity
+
+      - name: Init backend (dev)
+        working-directory: terraform
+        run: |
+          terraform init -input=false -reconfigure -backend-config=backend/dev.hcl
+
+      - name: Sanity check state contents
+        working-directory: terraform
+        run: terraform state list || true
+
+      # Optional: scale ECS service to 0 first (speeds up destroy)
+      - name: Set ECS desired count to 0
+        run: |
+          aws ecs update-service \
+            --cluster app-demo-dev-cluster \
+            --service app-demo-dev-service \
+            --desired-count 0 || true
+
+      - name: Destroy all dev resources (no -target)
         working-directory: terraform
         env:
-          TF_VAR_env: dev
+          TF_VAR_env:        dev
           TF_VAR_aws_region: ${{ env.AWS_REGION }}
         run: |
-          rm -rf .terraform
-          terraform init -input=false -reconfigure -backend-config=backend/dev.hcl
-          terraform apply -input=false -auto-approve \
-            -var-file=tfvars/dev.tfvars 
-
-      - name: Terraform Destroy (dev)
-        run: |
-          terraform destroy -auto-approve \
-            -target=module.vpc \
-            -target=module.alb \
-            -target=module.ecs
-
-      - name: (Optional) Delete dev-* images from ECR
-        if: ${{ inputs.delete_images == true }}
-        env:
-          AWS_REGION: ${{ env.AWS_REGION }}
-          ECR_REPO: ${{ env.ECR_REPO }}
-        run: |
-          echo "Finding dev-* image tags in $ECR_REPO ..."
-          # Get all tags, filter to dev-*, delete in small batches
-          mapfile -t TAGS < <(aws ecr describe-images \
-            --repository-name "$ECR_REPO" \
-            --query 'imageDetails[].imageTags[]' \
-            --output text 2>/dev/null | tr '\t' '\n' | grep '^dev-' || true)
-
-          if [ ${#TAGS[@]} -eq 0 ]; then
-            echo "No dev-* tags found."
-            exit 0
-          fi
-
-          echo "Deleting ${#TAGS[@]} dev-* tags..."
-          BATCH=()
-          for T in "${TAGS[@]}"; do
-            BATCH+=(imageTag="$T")
-            # ECR supports multiple --image-ids; delete in chunks of 50
-            if [ ${#BATCH[@]} -ge 50 ]; then
-              aws ecr batch-delete-image --repository-name "$ECR_REPO" --image-ids "${BATCH[@]}" || true
-              BATCH=()
-            fi
-          done
-          if [ ${#BATCH[@]} -gt 0 ]; then
-            aws ecr batch-delete-image --repository-name "$ECR_REPO" --image-ids "${BATCH[@]}" || true
-          fi
-          echo "ECR dev-* image cleanup complete."
+          terraform destroy -input=false -auto-approve -var-file=tfvars/dev.tfvars
