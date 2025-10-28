@@ -96,81 +96,95 @@ resource "aws_ecs_task_definition" "ecs_task_definition" {
   execution_role_arn       = aws_iam_role.iam_role_ecs_task_execution.arn
 
   container_definitions = jsonencode([
-    {
-      name      = "${var.name}-container"
-      image     = var.image
-      essential = true
-      dependsOn = [{
-        containerName = "otel-collector"
-        condition     = "START"
-      }]
-      portMappings = [
-        {
-          containerPort = var.container_port
-          hostPort      = var.container_port
-          protocol      = "tcp"
-        }
-      ]
-      logConfiguration = {
-        logDriver = "awslogs"
-        options = {
-          "awslogs-group"         = aws_cloudwatch_log_group.cloudwatch_logs_group.name
-          "awslogs-region"        = var.aws_region
-          "awslogs-stream-prefix" = "${var.name}"
-        }
+    # app container
+  {
+    name      = "${var.name}-container"
+    image     = var.image
+    essential = true
+
+    dependsOn = [
+      { containerName = "otel-collector", condition = "HEALTHY" }
+    ]
+
+    portMappings = [
+      {
+        containerPort = var.container_port
+        protocol      = "tcp"
       }
-      environment = [
-        { name  = var.name, value = var.env, debug = var.env == "dev" ? "true" : "false" },
-        { name = "ENVIRONMENT", value = var.env },    
-        { name = "OTEL_EXPORTER_OTLP_PROTOCOL", value = "grpc" },
-        { name = "OTEL_EXPORTER_OTLP_ENDPOINT", value = "http://otel-collector:4317" },
-        { name = "OTEL_SERVICE_NAME", value = "app-demo" },
-        { name = "OTEL_RESOURCE_ATTRIBUTES", value = "deployment.environment=${var.env}" }
-      ]
-      healthCheck = {
-        command     = ["CMD-SHELL", "curl -f http://localhost:${var.container_port}/health || exit 1"]
-        interval    = 30
-        timeout     = 5
-        retries     = 3
-        startPeriod = 10
+    ]
+
+    logConfiguration = {
+      logDriver = "awslogs"
+      options = {
+        "awslogs-group"         = aws_cloudwatch_log_group.cloudwatch_logs_group.name
+        "awslogs-region"        = var.aws_region
+        "awslogs-stream-prefix" = "${var.name}"
       }
-    },
-    {
-      name       = "otel-collector"
-      image      = "public.ecr.aws/aws-observability/aws-otel-collector:latest"
-      essential  = false
-      cpu        = 128
-      memory     = 256
-      portMappings = [
-      { containerPort = 4317, protocol = "tcp" },
-      { containerPort = 4318, protocol = "tcp" },
-      { containerPort = 13133, protocol = "tcp" } # health
-      ]
-      healthCheck = {
-        command     = ["CMD-SHELL", "curl -fsS http://localhost:13133/health || exit 1"]
-        interval    = 15
-        timeout     = 5
-        retries     = 3
-        startPeriod = 10
-      }
-      secrets = [
-        {
-          name      = "AOT_CONFIG_CONTENT"
-          valueFrom = "arn:aws:ssm:${var.aws_region}:${data.aws_caller_identity.this.account_id}:parameter/otel/${var.env}/config"
-        }
-      ]
-      logConfiguration = {
-        logDriver = "awslogs"
-        options = {
-          awslogs-group         = "/ecs/app-demo-${var.env}-logs"
-          awslogs-region        = var.aws_region
-          awslogs-stream-prefix = "otel-collector"
-        }
-      }
-      environment = [
-        { name = "AWS_REGION", value = var.aws_region }
-      ]
     }
+
+    environment = [
+      { name = "ENVIRONMENT", value = var.env },
+      { name = "OTEL_SERVICE_NAME", value = "app-demo" },
+      { name = "OTEL_RESOURCE_ATTRIBUTES", value = "deployment.environment=${var.env}" },
+
+      { name = "OTEL_EXPORTER_OTLP_PROTOCOL", value = "grpc" },
+      { name = "OTEL_EXPORTER_OTLP_ENDPOINT", value = "http://otel-collector:4317" },
+
+      { name = "OTEL_EXPORTER_OTLP_TRACES_PROTOCOL", value = "grpc" },
+      { name = "OTEL_EXPORTER_OTLP_TRACES_ENDPOINT", value = "http://otel-collector:4317" }
+    ]
+
+    healthCheck = {
+      command     = ["CMD-SHELL", "curl -f http://localhost:${var.container_port}/health || exit 1"]
+      interval    = 30
+      timeout     = 5
+      retries     = 3
+      startPeriod = 10
+    }
+  },
+    # otel-collector sidecar
+  {
+    name       = "otel-collector"
+    image      = "public.ecr.aws/aws-observability/aws-otel-collector:latest"
+    essential  = false
+    cpu        = 128
+    memory     = 256
+
+    portMappings = [
+      { containerPort = 4317, protocol = "tcp" },  # gRPC
+      { containerPort = 4318, protocol = "tcp" },  # HTTP
+      { containerPort = 13133, protocol = "tcp" }  # health
+    ]
+
+    healthCheck = {
+      command     = ["CMD-SHELL", "curl -fsS http://localhost:13133/health || exit 1"]
+      interval    = 15
+      timeout     = 5
+      retries     = 3
+      startPeriod = 10
+    }
+
+    # SSM-injected config
+    secrets = [
+      {
+        name      = "AOT_CONFIG_CONTENT"
+        valueFrom = "arn:aws:ssm:${var.aws_region}:${data.aws_caller_identity.this.account_id}:parameter/otel/${var.env}/config"
+      }
+    ]
+
+    logConfiguration = {
+      logDriver = "awslogs"
+      options = {
+        awslogs-group         = "/ecs/app-demo-${var.env}-logs"
+        awslogs-region        = var.aws_region
+        awslogs-stream-prefix = "otel-collector"
+      }
+    }
+
+    environment = [
+      { name = "AWS_REGION", value = var.aws_region }
+    ]
+  }
   ])
 }
 
