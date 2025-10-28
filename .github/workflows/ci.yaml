@@ -135,14 +135,41 @@ jobs:
                       "${{ steps.tags.outputs.prod_image }}"
           docker push "${{ steps.tags.outputs.prod_image }}"
 
-      - name: Terraform init/plan/apply (prod)
-        working-directory: terraform
+      - name: Define image tags
+        id: img
+        run: |
+          echo "DEV_IMAGE=${{ vars.DEV_ECR_HOST }}/${{ vars.ECR_REPO }}:dev-${{ github.sha }}" >> $GITHUB_OUTPUT
+          echo "PROD_IMAGE=${{ vars.PROD_ECR_HOST }}/${{ vars.ECR_REPO }}:prod-${{ github.sha }}" >> $GITHUB_OUTPUT
+
+      - name: Check if prod tag already exists
+        id: prod_tag
+        run: |
+          set -e
+          if aws ecr describe-images \
+              --repository-name "${{ vars.ECR_REPO }}" \
+              --image-ids imageTag="prod-${{ github.sha }}" \
+              --region "${{ vars.PROD_AWS_REGION }}" >/dev/null 2>&1; then
+            echo "exists=true" >> $GITHUB_OUTPUT
+          else
+            echo "exists=false" >> $GITHUB_OUTPUT
+          fi
+
+      - name: Promote image to prod (pull→tag→push) if missing
+        if: steps.prod_tag.outputs.exists == 'false'
+        run: |
+          # Pull built image from DEV
+          docker pull "${{ steps.img.outputs.DEV_IMAGE }}"
+          # Retag for PROD
+          docker tag "${{ steps.img.outputs.DEV_IMAGE }}" "${{ steps.img.outputs.PROD_IMAGE }}"
+          # Push to PROD once (immutable)
+          docker push "${{ steps.img.outputs.PROD_IMAGE }}"
+
+      - name: Terraform apply (prod)
         env:
           TF_VAR_env: prod
-          TF_VAR_image: ${{ steps.tags.outputs.prod_image }}
-          TF_VAR_aws_region: ${{ env.AWS_REGION }}
+          TF_VAR_image: ${{ steps.img.outputs.PROD_IMAGE }}
+          TF_VAR_aws_region: ${{ vars.PROD_AWS_REGION }}
         run: |
-          rm -rf .terraform
           terraform init -input=false -reconfigure -backend-config=backend/prod.hcl
-          terraform plan -input=false -var-file=tfvars/prod.tfvars -out=tfplan
+          terraform plan -input=false -out=tfplan
           terraform apply -input=false -auto-approve tfplan
