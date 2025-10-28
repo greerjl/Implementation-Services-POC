@@ -96,7 +96,7 @@ resource "aws_ecs_task_definition" "ecs_task_definition" {
   memory                   = "512"
 
   # Execution role must have: AmazonECSTaskExecutionRolePolicy + SSM read for the collector secret
-  execution_role_arn       = aws_iam_role.iam_role_ecs_task_execution.arn
+  execution_role_arn = aws_iam_role.iam_role_ecs_task_execution.arn
 
   # (Optional) If your app needs AWS APIs at runtime, set a task role here:
   # task_role_arn          = aws_iam_role.app_task_role.arn
@@ -114,7 +114,7 @@ resource "aws_ecs_task_definition" "ecs_task_definition" {
       ]
 
       # Start the app through the OTel launcher so env vars are honored
-      command = ["sh","-lc","opentelemetry-instrument python app.py"]
+      command = ["sh", "-lc", "opentelemetry-instrument python app.py"]
 
       portMappings = [
         {
@@ -162,17 +162,17 @@ resource "aws_ecs_task_definition" "ecs_task_definition" {
 
     // ===== ADOT Collector sidecar =====
     {
-      name       = "otel-collector"
-      image      = "public.ecr.aws/aws-observability/aws-otel-collector:latest"
-      essential  = false
-      cpu        = 128
-      memory     = 256
+      name      = "otel-collector"
+      image     = "public.ecr.aws/aws-observability/aws-otel-collector:latest"
+      essential = false
+      cpu       = 128
+      memory    = 256
 
       # awsvpc mode: only containerPort needed; no hostPort mapping required
       portMappings = [
-        { containerPort = 4317, protocol = "tcp" },  # OTLP gRPC (kept open if you switch later)
-        { containerPort = 4318, protocol = "tcp" },  # OTLP HTTP (used now)
-        { containerPort = 13133, protocol = "tcp" }  # health endpoint
+        { containerPort = 4317, protocol = "tcp" }, # OTLP gRPC (kept open if you switch later)
+        { containerPort = 4318, protocol = "tcp" }, # OTLP HTTP (used now)
+        { containerPort = 13133, protocol = "tcp" } # health endpoint
       ]
 
       healthCheck = {
