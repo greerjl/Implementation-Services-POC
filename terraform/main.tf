@@ -27,6 +27,7 @@ data "aws_subnets" "default" {
 resource "aws_ecr_repository" "ecr_repo" {
   name                 = var.ecr_repo_name
   image_tag_mutability = "IMMUTABLE"
+  tags                 = local.default_tags
   lifecycle {
     prevent_destroy = true
     ignore_changes  = [name]
