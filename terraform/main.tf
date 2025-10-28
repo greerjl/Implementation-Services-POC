@@ -100,6 +100,10 @@ resource "aws_ecs_task_definition" "ecs_task_definition" {
       name      = "${var.name}-container"
       image     = var.image
       essential = true
+      dependsOn = [{
+        containerName = "otel-collector"
+        condition     = "START"
+      }]
       portMappings = [
         {
           containerPort = var.container_port
@@ -118,9 +122,10 @@ resource "aws_ecs_task_definition" "ecs_task_definition" {
       environment = [
         { name  = var.name, value = var.env, debug = var.env == "dev" ? "true" : "false" },
         { name = "ENVIRONMENT", value = var.env },    
-        { name = "OTEL_EXPORTER_OTLP_ENDPOINT", value = "http://localhost:4317" },
         { name = "OTEL_EXPORTER_OTLP_PROTOCOL", value = "grpc" },
-        { name = "OTEL_RESOURCE_ATTRIBUTES", value = "service.name=app-demo,deployment.environment=${var.env}" }
+        { name = "OTEL_EXPORTER_OTLP_ENDPOINT", value = "http://otel-collector:4317" },
+        { name = "OTEL_SERVICE_NAME", value = "app-demo" },
+        { name = "OTEL_RESOURCE_ATTRIBUTES", value = "deployment.environment=${var.env}" }
       ]
       healthCheck = {
         command     = ["CMD-SHELL", "curl -f http://localhost:${var.container_port}/health || exit 1"]
@@ -137,9 +142,17 @@ resource "aws_ecs_task_definition" "ecs_task_definition" {
       cpu        = 128
       memory     = 256
       portMappings = [
-        { containerPort = 4317, protocol = "tcp" },
-        { containerPort = 4318, protocol = "tcp" }
+      { containerPort = 4317, protocol = "tcp" },
+      { containerPort = 4318, protocol = "tcp" },
+      { containerPort = 13133, protocol = "tcp" } # health
       ]
+      healthCheck = {
+        command     = ["CMD-SHELL", "curl -fsS http://localhost:13133/health || exit 1"]
+        interval    = 15
+        timeout     = 5
+        retries     = 3
+        startPeriod = 10
+      }
       secrets = [
         {
           name      = "AOT_CONFIG_CONTENT"
