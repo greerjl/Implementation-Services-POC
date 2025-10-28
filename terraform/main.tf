@@ -93,98 +93,116 @@ resource "aws_ecs_task_definition" "ecs_task_definition" {
   requires_compatibilities = ["FARGATE"]
   cpu                      = "256"
   memory                   = "512"
+
+  # Execution role must have: AmazonECSTaskExecutionRolePolicy + SSM read for the collector secret
   execution_role_arn       = aws_iam_role.iam_role_ecs_task_execution.arn
 
+  # (Optional) If your app needs AWS APIs at runtime, set a task role here:
+  # task_role_arn          = aws_iam_role.app_task_role.arn
+
   container_definitions = jsonencode([
-    # app container
-  {
-    name      = "${var.name}-container"
-    image     = var.image
-    essential = true
+    // ===== App container =====
+    {
+      name      = "${var.name}-container"
+      image     = var.image
+      essential = true
 
-    dependsOn = [
-      { containerName = "otel-collector", condition = "HEALTHY" }
-    ]
+      # Start after the collector is healthy
+      dependsOn = [
+        { containerName = "otel-collector", condition = "HEALTHY" }
+      ]
 
-    portMappings = [
-      {
-        containerPort = var.container_port
-        protocol      = "tcp"
+      # Start the app through the OTel launcher so env vars are honored
+      command = ["sh","-lc","opentelemetry-instrument python app.py"]
+
+      portMappings = [
+        {
+          containerPort = var.container_port
+          protocol      = "tcp"
+        }
+      ]
+
+      logConfiguration = {
+        logDriver = "awslogs"
+        options = {
+          "awslogs-group"         = aws_cloudwatch_log_group.cloudwatch_logs_group.name
+          "awslogs-region"        = var.aws_region
+          "awslogs-stream-prefix" = "${var.name}"
+        }
       }
-    ]
 
-    logConfiguration = {
-      logDriver = "awslogs"
-      options = {
-        "awslogs-group"         = aws_cloudwatch_log_group.cloudwatch_logs_group.name
-        "awslogs-region"        = var.aws_region
-        "awslogs-stream-prefix" = "${var.name}"
+      environment = [
+        # helpful bump so every apply creates a new task def revision
+        { name = "CONFIG_VERSION", value = formatdate("YYYYMMDDhhmmss", timestamp()) },
+
+        { name = "ENVIRONMENT", value = var.env },
+        { name = "OTEL_SERVICE_NAME", value = "app-demo" },
+        { name = "OTEL_RESOURCE_ATTRIBUTES", value = "deployment.environment=${var.env}" },
+
+        # Traces via OTLP HTTP to the sidecar (not localhost):
+        { name = "OTEL_TRACES_EXPORTER", value = "otlp" },
+        { name = "OTEL_EXPORTER_OTLP_PROTOCOL", value = "http/protobuf" },
+        { name = "OTEL_EXPORTER_OTLP_ENDPOINT", value = "http://otel-collector:4318" },
+        { name = "OTEL_EXPORTER_OTLP_TRACES_PROTOCOL", value = "http/protobuf" },
+        { name = "OTEL_EXPORTER_OTLP_TRACES_ENDPOINT", value = "http://otel-collector:4318" },
+
+        # Optional while debugging to reduce noise:
+        { name = "OTEL_METRICS_EXPORTER", value = "none" }
+      ]
+
+      healthCheck = {
+        command     = ["CMD-SHELL", "curl -f http://localhost:${var.container_port}/health || exit 1"]
+        interval    = 30
+        timeout     = 5
+        retries     = 3
+        startPeriod = 10
       }
-    }
+    },
 
-    environment = [
-      { name = "ENVIRONMENT", value = var.env },
-      { name = "OTEL_SERVICE_NAME", value = "app-demo" },
-      { name = "OTEL_RESOURCE_ATTRIBUTES", value = "deployment.environment=${var.env}" },
+    // ===== ADOT Collector sidecar =====
+    {
+      name       = "otel-collector"
+      image      = "public.ecr.aws/aws-observability/aws-otel-collector:latest"
+      essential  = false
+      cpu        = 128
+      memory     = 256
 
-      { name = "OTEL_EXPORTER_OTLP_PROTOCOL", value = "http/protobuf" },
-      { name = "OTEL_EXPORTER_OTLP_ENDPOINT", value = "http://otel-collector:4318" },
+      # awsvpc mode: only containerPort needed; no hostPort mapping required
+      portMappings = [
+        { containerPort = 4317, protocol = "tcp" },  # OTLP gRPC (kept open if you switch later)
+        { containerPort = 4318, protocol = "tcp" },  # OTLP HTTP (used now)
+        { containerPort = 13133, protocol = "tcp" }  # health endpoint
+      ]
 
-      { name = "OTEL_EXPORTER_OTLP_TRACES_PROTOCOL", value = "http/protobuf" },
-      { name = "OTEL_EXPORTER_OTLP_TRACES_ENDPOINT", value = "http://otel-collector:4318" }
-    ]
-
-    healthCheck = {
-      command     = ["CMD-SHELL", "curl -f http://localhost:${var.container_port}/health || exit 1"]
-      interval    = 30
-      timeout     = 5
-      retries     = 3
-      startPeriod = 10
-    }
-  },
-    # otel-collector sidecar
-  {
-    name       = "otel-collector"
-    image      = "public.ecr.aws/aws-observability/aws-otel-collector:latest"
-    essential  = false
-    cpu        = 128
-    memory     = 256
-
-    portMappings = [
-      { containerPort = 4317, protocol = "tcp" },  # gRPC
-      { containerPort = 4318, protocol = "tcp" },  # HTTP
-      { containerPort = 13133, protocol = "tcp" }  # health
-    ]
-
-    healthCheck = {
-      command     = ["CMD-SHELL", "curl -fsS http://localhost:13133/health || exit 1"]
-      interval    = 15
-      timeout     = 5
-      retries     = 3
-      startPeriod = 10
-    }
-
-    # SSM-injected config
-    secrets = [
-      {
-        name      = "AOT_CONFIG_CONTENT"
-        valueFrom = "arn:aws:ssm:${var.aws_region}:${data.aws_caller_identity.this.account_id}:parameter/otel/${var.env}/config"
+      healthCheck = {
+        command     = ["CMD-SHELL", "curl -fsS http://localhost:13133/health || exit 1"]
+        interval    = 15
+        timeout     = 5
+        retries     = 3
+        startPeriod = 10
       }
-    ]
 
-    logConfiguration = {
-      logDriver = "awslogs"
-      options = {
-        awslogs-group         = "/ecs/app-demo-${var.env}-logs"
-        awslogs-region        = var.aws_region
-        awslogs-stream-prefix = "otel-collector"
+      # SSM-injected ADOT config (must include otlp http/grpc receivers and health_check)
+      secrets = [
+        {
+          name      = "AOT_CONFIG_CONTENT"
+          valueFrom = "arn:aws:ssm:${var.aws_region}:${data.aws_caller_identity.this.account_id}:parameter/otel/${var.env}/config"
+        }
+      ]
+
+      logConfiguration = {
+        logDriver = "awslogs"
+        options = {
+          "awslogs-group"         = "/ecs/app-demo-${var.env}-logs"
+          "awslogs-region"        = var.aws_region
+          "awslogs-stream-prefix" = "otel-collector"
+        }
       }
-    }
 
-    environment = [
-      { name = "AWS_REGION", value = var.aws_region }
-    ]
-  }
+      environment = [
+        { name = "AWS_REGION", value = var.aws_region }
+      ]
+    }
   ])
 }
 
