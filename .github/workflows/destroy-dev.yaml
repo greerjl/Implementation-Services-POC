@@ -67,4 +67,11 @@ jobs:
           TF_VAR_env:        dev
           TF_VAR_aws_region: ${{ env.AWS_REGION }}
         run: |
-          terraform destroy -input=false -auto-approve -var-file=tfvars/dev.tfvars
+          terraform destroy -target=aws_iam_role_policy_attachment.ecs_task_execution_role_policy_attachment
+          terraform destroy -target=aws_iam_role_policy.ssm_read_parameters_policy
+          terraform destroy -target=aws_iam_role.iam_role_ecs_task_execution
+          terraform destroy -target=aws_ecs_service.ecs_service
+          terraform destroy -target=aws_ecs_task_definition.ecs_task_definition
+          terraform destroy -target=aws_ecs_cluster.ecs_cluster
+          terraform destroy -target=aws_security_group.ecs_security_group
+          terraform destroy -target=aws_cloudwatch_log_group.cloudwatch_logs_group
