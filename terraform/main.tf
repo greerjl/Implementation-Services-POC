@@ -127,11 +127,11 @@ resource "aws_ecs_task_definition" "ecs_task_definition" {
       { name = "OTEL_SERVICE_NAME", value = "app-demo" },
       { name = "OTEL_RESOURCE_ATTRIBUTES", value = "deployment.environment=${var.env}" },
 
-      { name = "OTEL_EXPORTER_OTLP_PROTOCOL", value = "grpc" },
-      { name = "OTEL_EXPORTER_OTLP_ENDPOINT", value = "http://otel-collector:4317" },
+      { name = "OTEL_EXPORTER_OTLP_PROTOCOL", value = "http/protobuf" },
+      { name = "OTEL_EXPORTER_OTLP_ENDPOINT", value = "http://otel-collector:4318" },
 
-      { name = "OTEL_EXPORTER_OTLP_TRACES_PROTOCOL", value = "grpc" },
-      { name = "OTEL_EXPORTER_OTLP_TRACES_ENDPOINT", value = "http://otel-collector:4317" }
+      { name = "OTEL_EXPORTER_OTLP_TRACES_PROTOCOL", value = "http/protobuf" },
+      { name = "OTEL_EXPORTER_OTLP_TRACES_ENDPOINT", value = "http://otel-collector:4318" }
     ]
 
     healthCheck = {
