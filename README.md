@@ -5,6 +5,8 @@ Repo for Implementation Services Team Technical Presentation. This project demon
 ## Table of contents
 
 - What this repo contains
+- Architecture Diagram
+- Timeline for Project Deployment at scale
 - Prerequisites
 - Local development
 - CI / GitHub Actions (OIDC)
@@ -21,6 +23,14 @@ Repo for Implementation Services Team Technical Presentation. This project demon
 - `.gitignore` - rules added to avoid committing local artifacts, credentials and build outputs.
 
 > Note: This repository is an example/proof-of-concept. Adjust registry names, Terraform variables, and IAM policies before using in production.
+
+## Architecture Diagram
+<img width="1891" height="699" alt="Demo drawio" src="https://github.com/user-attachments/assets/549c87fd-604b-459d-bfca-98ea2f1bf8ae" />
+
+
+## Timeline for Project Deployment at scale
+<img width="1807" height="722" alt="POC Deployment Timeline" src="https://github.com/user-attachments/assets/0b935855-293b-4fe8-8df6-864603c1a4a0" />
+
 
 ## Prerequisites
 
